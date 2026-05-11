@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Basic usage example and testing of pysma."""
+
 import argparse
 import asyncio
 import logging
@@ -42,7 +43,7 @@ def print_table(sensors: Sensors) -> None:
         print("No Sensors found!")
     for sen in sensors:
         if sen.value is None:
-            print("{:>25}".format(sen.name))
+            print(f"{sen.name:>25}")
         else:
             name = sen.name
             if sen.key:
