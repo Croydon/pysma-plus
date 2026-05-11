@@ -40,7 +40,6 @@ jobs:
 
   pytest:
     name: Run tests Python ${{ matrix.python-version }}
-    needs: [ruff]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -73,7 +72,7 @@ jobs:
 
   release:
     name: Build and publish Python 🐍 distributions 📦 to PyPI
-    needs: [pytest]
+    needs: [ruff, zuban, pytest]
     #if: startsWith(github.ref, 'refs/tags')
 
     runs-on: ubuntu-latest
