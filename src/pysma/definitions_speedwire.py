@@ -1,1289 +1,635 @@
-"""Implementation for SMA Speedwire
+"""
+Implementation for SMA Speedwire
 
-Originally based on https://github.com/Wired-Square/sma-query/blob/main/src/sma_query_sw/commands.py
 Improved with Information from https://github.com/mhop/fhem-mirror/blob/master/fhem/FHEM/76_SMAInverter.pm
 Receiver classes completely reimplemented by little.yoda
+
 """
 
-# pylint: disable=too-many-lines
-
-import ctypes
+import asyncio
+import binascii
+import collections
+import copy
+import logging
+import struct
 import time
-from ctypes import LittleEndianStructure
-from typing import Annotated, Any, Dict
+from asyncio import DatagramProtocol, Future
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
-import dataclasses_struct as dcs
+from .const import SMATagList
+from .definitions_speedwire import (
+    SpeedwireFrame,
+    commands,
+    responseDef,
+    speedwireHeader,
+    speedwireHeader6065,
+)
+from .device import Device, DeviceInformation, DiscoveryInformation
+from .exceptions import (
+    SmaAuthenticationException,
+    SmaConnectionException,
+    SmaReadException,
+)
+from .helpers import version_int_to_string
+from .sensor import Sensor, Sensors
 
-from .const import Identifier, SMATagList
-from .sensor import Sensor
+_LOGGER = logging.getLogger(__name__)
 
-responseDef: dict[str, list[dict[str, Any]]] = {
-    "00464B01": [],  # Netzspannung Phase L1 gegen L2
-    "00464C01": [],  # Netzspannung Phase L2 gegen L3
-    "00464D01": [],  # Netzspannung Phase L3 gegen L1
-    "00416601": [],  # WaitingTimeUntilFeedIn  WaitingTimeUntilFeedIn
-    "00411E01": [],  # MaxACPower
-    "00411F01": [],  # MaxACPower
-    "00412001": [],  # MaxACPower
-    "00462E01": [],  # OperationTime
-    "00462F01": [],  # OperationTime
-    "00823401": [
-        {
-            "cmd": "Firmware",
-            "format": "version",
-            "sensor": Sensor("Firmware", Identifier.device_sw_version),
-            "idx": 4,
-            "overwrite": False,
-        }
-    ],
-    "00260101": [
-        {
-            "cmd": "EnergyProduction",
-            "format": "uint",
-            "sensor": Sensor("total", Identifier.total_yield, factor=1000, unit="kWh"),
-            "idx": 0,
-        }
-    ],
-    "40251E01": [
-        {
-            "cmd": "SpotDCPower",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_power1", Identifier.pv_power_a, factor=1, unit="W"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40251E02": [
-        {
-            "cmd": "SpotDCPower",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_power2", Identifier.pv_power_b, factor=1, unit="W"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40251E03": [
-        {
-            "cmd": "SpotDCPower",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_power3", Identifier.pv_power_c, factor=1, unit="W"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40464001": [
-        {
-            "cmd": "spot_ac_power",
-            "format": "int",
-            "sensor": Sensor("spot_ac_power1", Identifier.power_l1, factor=1, unit="W"),
-            "idx": 0,
-        }
-    ],
-    "40464101": [
-        {
-            "cmd": "spot_ac_power",
-            "format": "int",
-            "sensor": Sensor("spot_ac_power2", Identifier.power_l2, factor=1, unit="W"),
-            "idx": 0,
-        }
-    ],
-    "40464201": [
-        {
-            "cmd": "spot_ac_power",
-            "format": "int",
-            "sensor": Sensor("spot_ac_power3", Identifier.power_l3, factor=1, unit="W"),
-            "idx": 0,
-        }
-    ],
-    "08412801": [
-        {
-            "cmd": "OperatingStatus",
-            "format": "uint",
-            "sensor": [
-                Sensor(
-                    "GeneralOperatingStatus",
-                    Identifier.operating_status_genereal,
-                    factor=1,
-                    mapper=SMATagList,
-                ),
-                Sensor(
-                    "GeneralOperatingStatus2",
-                    "Temp GeneralOperatingStatus2",
-                    factor=1,
-                    mapper=SMATagList,
-                ),
-            ],
-            "idx": 0xFF,
-        }
-    ],
-    "0046C201": [
-        {
-            "cmd": "SpotDCPower_3",
-            "format": "uint",
-            "sensor": Sensor("pv_power", Identifier.pv_power, unit="W"),
-            "idx": 0,
-        }
-    ],
-    "40263F01": [
-        {
-            "cmd": "SpotACTotalPower",
-            "format": "int",
-            "sensor": Sensor("grid_power", Identifier.grid_power, unit="W"),
-            "idx": 0,
-        }
-    ],
-    "00464801": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_ac_voltage1", Identifier.voltage_l1, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "00464901": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "ac_voltage_l1", Identifier.voltage_l2, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "00464A01": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "ac_voltage_l2", Identifier.voltage_l3, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40465301": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "ac_current_l1", Identifier.current_l1, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40465401": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "ac_current_l2", Identifier.current_l2, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40465501": [
-        {
-            "cmd": "spot_ac_voltage",
-            "format": "uint",
-            "sensor": Sensor(
-                "ac_current_l3", Identifier.current_l3, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "08412B01": [
-        {
-            "cmd": "OperatingStatus",
-            "format": "uint",
-            "sensor": Sensor(
-                "OperatingStatus", Identifier.operating_status, mapper=SMATagList
-            ),
-            "idx": 0xFF,
-        }
-    ],
-    "0046C301": [
-        {
-            "cmd": "PVEnergyProduction",
-            "format": "uint",
-            "sensor": Sensor(
-                "pvEnergyProduction", Identifier.pv_gen_meter, unit="kWh", factor=1000
-            ),
-            "idx": 0,
-        }
-    ],
-    "0846A601": [
-        {
-            "cmd": "GridConection",
-            "format": "uint",
-            #                "sensor": , TODO
-            "idx": 0xFF,
-        }
-    ],
-    "08214801": [
-        {
-            "cmd": "DeviceStatus",
-            "format": "uint",
-            "sensor": Sensor("inverter_status", Identifier.status, mapper=SMATagList),
-            "idx": 0xFF,
-        }
-    ],
-    "40451F01": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_voltage1", Identifier.pv_voltage_a, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40451F02": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_voltage2", Identifier.pv_voltage_b, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40451F03": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_voltage3", Identifier.pv_voltage_c, factor=100, unit="V"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40452101": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_current1", Identifier.pv_current_a, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40452102": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_current2", Identifier.pv_current_b, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "40452103": [
-        {
-            "cmd": "SpotACCurrent",
-            "format": "uint",
-            "sensor": Sensor(
-                "spot_dc_current3", Identifier.pv_current_c, factor=1000, unit="A"
-            ),
-            "idx": 0,
-        }
-    ],
-    "08416401": [
-        {
-            "cmd": "GridRelayStatus",
-            "format": "uint",
-            "sensor": Sensor(
-                "GridRelayStatus", Identifier.grid_relay_status, mapper=SMATagList
-            ),
-            "idx": 0xFF,
-        }
-    ],
-    "00465701": [
-        {
-            "cmd": "SpotGridFrequency",
-            "format": "uint",
-            "sensor": Sensor(
-                "grid_frequency", Identifier.frequency, factor=100, unit="Hz"
-            ),
-            "idx": 0,
-        }
-    ],
-    "10821E01": [
-        {
-            "cmd": "TypeLabel",
-            "format": "uint",
-            # "sensor": TODO Vermutlich String
-            "idx": 0,
-        }
-    ],
-    "08821F01": [
-        {
-            "cmd": "TypeLabel",
-            "format": "uint",
-            "sensor": Sensor(
-                "inverter_class", Identifier.device_class, mapper=SMATagList
-            ),
-            "idx": 0xFF,
-            "overwrite": False,
-        }
-    ],
-    "08822001": [
-        {
-            "cmd": "TypeLabel",
-            "format": "uint",
-            "sensor": Sensor(
-                "inverter_type", Identifier.device_type, mapper=SMATagList
-            ),
-            "idx": 0xFF,
-            "overwrite": False,
-        }
-    ],
-    "00262201": [
-        {
-            "cmd": "energy_production",
-            "format": "uint",
-            "sensor": Sensor("today", Identifier.daily_yield, unit="Wh"),
-            "idx": 0,
-        }
-    ],
-    "00254F01": [
-        {
-            "cmd": "",
-            "format": "uint",
-            "sensor": Sensor(
-                "Insulation_2",
-                Identifier.pv_isolation_resistance,
-                unit="kOhm",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "40254E01": [
-        {
-            "cmd": "",
-            "format": "uint",
-            "sensor": Sensor(
-                "Insulation_1",
-                Identifier.insulation_residual_current,
-                unit="mA",
-            ),
-            "idx": 0,
-        }
-    ],
-    "00462401": [
-        {
-            "cmd": "EM_1",
-            "format": "uint",
-            "sensor": Sensor(
-                "meter_yield",
-                Identifier.metering_total_yield,
-                unit="kWh",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "40237701": [
-        {
-            "cmd": "InverterTemperature",
-            "format": "uint",
-            "sensor": Sensor(
-                "InverterTemperature",
-                Identifier.temp_a,
-                unit="°C",
-                factor=100,
-            ),
-            "idx": 0,
-        }
-    ],
-    "00295A01": [
-        {
-            "cmd": "ChargeStatus",
-            "format": "uint",
-            "sensor": Sensor("ChargeStatus", Identifier.battery_soc_total, unit="%"),
-            "idx": 0,
-        }
-    ],
-    "40491E01": [
-        {
-            "cmd": "BatteryInfo",
-            "format": "uint",
-            "sensor": Sensor("TEMP BAT_CYCLES", "TEMP Battery Cycles"),
-            "idx": 0,
-        }
-    ],
-    "40495B01": [
-        {
-            "cmd": "batteryTemp",
-            "format": "uint",
-            "sensor": Sensor(
-                "batteryTemp",
-                Identifier.battery_temp_a,
-                unit="°C",
-                factor=10,
-            ),
-            "idx": 0,
-        }
-    ],
-    "00496701": [
-        {
-            "cmd": "SpotBatteryLoad",
-            "format": "uint",
-            "sensor": Sensor(
-                "SpotBatteryLoad",
-                Identifier.battery_charge_total,
-                unit="kWh",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "00496801": [
-        {
-            "cmd": "SpotBatteryUnload",
-            "format": "uint",
-            "sensor": Sensor(
-                "SpotBatteryUnLoad",
-                Identifier.battery_discharge_total,
-                unit="kWh",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "00495C01": [
-        {
-            "cmd": "battery_voltage_a",
-            "format": "uint",
-            "sensor": Sensor(
-                "battery_voltage_a",
-                Identifier.battery_voltage_a,
-                unit="V",
-                factor=100,
-            ),
-            "idx": 0,
-        }
-    ],
-    "40495D01": [
-        {
-            "cmd": "battery_current_a",
-            "format": "int",
-            "sensor": Sensor(
-                "battery_current_a",
-                Identifier.battery_current_a,
-                unit="A",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "00696E01": [
-        {
-            "cmd": "BatteryInfo_Capacity",
-            "format": "uint",
-            "sensor": Sensor(
-                "BatteryInfo_Capacity", Identifier.battery_capacity_total, unit="%"
-            ),
-            "idx": 0,
-        }
-    ],
-    "00496901": [
-        {
-            "cmd": "BatteryInfo_Charge",
-            "format": "uint",
-            "sensor": Sensor(
-                "BatteryInfo_Charge", Identifier.battery_power_charge_total, unit="W"
-            ),
-            "idx": 0,
-        }
-    ],
-    "00496A01": [
-        {
-            "cmd": "BatteryInfo_Charge",
-            "format": "uint",
-            "sensor": Sensor(
-                "BatteryInfo_DisCharge",
-                Identifier.battery_power_discharge_total,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "00462501": [
-        {
-            "cmd": "EM_1",
-            "format": "uint",
-            "sensor": Sensor(
-                "EM1_1 Identifier.metering_total_absorbed",
-                Identifier.metering_total_absorbed,
-                unit="kWh",
-                factor=1000,
-            ),
-            "idx": 0,
-        }
-    ],
-    "40463601": [
-        {
-            "cmd": "EM_3",
-            "format": "uint",
-            "sensor": Sensor(
-                "EM3 Identifier.metering_power_supplied",
-                Identifier.metering_power_supplied,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "40463701": [
-        {
-            "cmd": "EM_3",
-            "format": "uint",
-            "sensor": Sensor(
-                "EM3 Identifier.metering_power_absorbed",
-                Identifier.metering_power_absorbed,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "00893701": [
-        {
-            "cmd": "BatteryInfo_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "EM3 BatteryInfo_4", "TEMP battery_capacity_rated", unit="Wh"
-            ),
-            "idx": 4,
-        }
-    ],
-    "08412509": [
-        {
-            "cmd": "BackupRelayStatus",
-            "format": "uint",
-            "sensor": Sensor(
-                "BackupRelayStatus", "TEMP_BackupRelayStatus", mapper=SMATagList
-            ),
-            "idx": 0xFF,
-        }
-    ],
-    # "00469109": [{ # Meter_Grid_FeedIn
-    #             "cmd": "EM_2",
-    #             "format": "uint",
-    #             "sensor": Sensor("EM_2", Identifier., unit="kWh", factor=1000),
-    #             "idx": 0
-    # }],
-    # "00469209": [{ # Meter_Grid_FeedIn
-    #             "cmd": "EM_2",
-    #             "format": "uint",
-    #             "sensor": Sensor("EM_2", Identifier.battery_discharge_total, unit="kWh", factor=1000),
-    #             "idx": 0
-    # }],
-    "0046E809": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_feed_l1",
-                Identifier.metering_active_power_feed_l1,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "0046E909": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_feed_l2",
-                Identifier.metering_active_power_feed_l2,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "0046EA09": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_feed_l3",
-                Identifier.metering_active_power_feed_l3,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "0046EB09": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_draw_l1",
-                Identifier.metering_active_power_draw_l1,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "0046EC09": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_draw_l2",
-                Identifier.metering_active_power_draw_l2,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "0046ED09": [
-        {
-            "cmd": "EM_4",
-            "format": "uint",
-            "sensor": Sensor(
-                "active_power_draw_l3",
-                Identifier.metering_active_power_draw_l3,
-                unit="W",
-            ),
-            "idx": 0,
-        }
-    ],
-    "40574609": [
-        {
-            "cmd": "SpotACCurrentBackup",
-            "format": "uint",
-            # "sensor": ,
-            "idx": 0,
-        }
-    ],
-    "40574709": [
-        {
-            "cmd": "SpotACCurrentBackup",
-            "format": "uint",
-            # "sensor": ,
-            "idx": 0,
-        }
-    ],
-    "40574809": [
-        {
-            "cmd": "SpotACCurrentBackup",
-            "format": "uint",
-            # "sensor": ,
-            "idx": 0,
-        }
-    ],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-    # "": [{
-    #             "cmd": "",
-    #             "format": "uint",
-    #             "sensor": ,
-    #             "idx": 0
-    # }],
-}
-
-commands: Dict[str, Dict[str, Any]] = {
-    "login": {
-        "command": 0xFFFD040C,
-        "response": 0xFFFD040D,
-        "first": 0x0030CB00,
-        "last": 0x0030CB00,
-    },
-    "login2": {
-        "command": 0xFFFD040C,
-        # "response": 0xFFFD040D,
-        "first": 0x00000007,
-        "last": 0x00000384,
-    },
-    "logoff": {
-        "command": 0xFFFD010E,
-        "first": 0xFFFFFFFF,
-        "last": 0x00000000,
-        "response": 0xFFFD010F,
-    },
-    "TypeLabel": {
-        "command": 0x58000200,
-        "first": 0x00821E00,
-        "last": 0x008220FF,
-    },
-    "EnergyProduction": {
-        "command": 0x54000200,
-        "first": 0x00260100,
-        "last": 0x002622FF,
-    },
-    "PVEnergyProduction": {
-        "command": 0x54000200,
-        "first": 0x0046C300,
-        "last": 0x0046C3FF,
-    },
-    "SpotDCPower": {
-        "command": 0x53800200,
-        "first": 0x00251E00,
-        "last": 0x00251EFF,
-    },
-    "SpotDCPower_3": {
-        "command": 0x51000200,
-        "first": 0x0046C200,
-        "last": 0x0046C2FF,
-    },
-    "SpotACTotalPower": {
-        "command": 0x51000200,
-        "first": 0x00263F00,
-        "last": 0x00263FFF,
-    },
-    "ChargeStatus": {
-        "command": 0x51000200,
-        "first": 0x00295A00,
-        "last": 0x00295AFF,
-    },
-    "SpotDCVoltage": {
-        "command": 0x53800200,
-        "first": 0x00451F00,
-        "last": 0x004521FF,
-    },
-    "SpotACCurrentBackup": {
-        "command": 0x51000200,
-        "first": 0x40574600,
-        "last": 0x405748FF,
-    },
-    "BatteryInfo_TEMP": {
-        "command": 0x51000200,
-        "first": 0x00495B00,
-        "last": 0x00495B10,
-    },
-    "BatteryInfo_UDC": {
-        "command": 0x51000200,
-        "first": 0x00495C00,
-        "last": 0x00495C10,
-    },
-    "BatteryInfo_IDC": {
-        "command": 0x51000200,
-        "first": 0x00495D00,
-        "last": 0x00495D10,
-    },
-    "BatteryInfo_Charge": {
-        "command": 0x51000200,
-        "first": 0x00496900,
-        "last": 0x00496AFF,
-    },
-    "BatteryInfo_Capacity": {
-        "command": 0x51000200,
-        "first": 0x00696E00,
-        "last": 0x00696E10,
-    },
-    "BatteryInfo": {
-        "command": 0x51000200,
-        "first": 0x00491E00,
-        "last": 0x00495DFF,
-    },
-    "BatteryInfo_3": {
-        "command": 0x58020200,
-        "first": 0x08822C00,
-        "last": 0x08822CFF,
-    },
-    "BatteryInfo_4": {
-        "command": 0x58000200,
-        "first": 0x00893700,
-        "last": 0x008937FF,
-    },
-    "BatteryInfo_5": {
-        "command": 0x58020200,
-        "first": 0x00B18900,
-        "last": 0x00B189FF,
-    },
-    "SpotGridFrequency": {
-        "command": 0x51000200,
-        "first": 0x00465700,
-        "last": 0x004657FF,
-    },
-    "OperationTime": {
-        "command": 0x54000200,
-        "first": 0x00462E00,
-        "last": 0x00462FFF,
-    },
-    "InverterTemperature": {
-        "command": 0x52000200,
-        "first": 0x00237700,
-        "last": 0x002377FF,
-        "format": "int",
-    },
-    "MaxACPower": {
-        "command": 0x51000200,
-        "first": 0x00411E00,
-        "last": 0x004120FF,
-    },
-    "MaxACPower2": {
-        "command": 0x51000200,
-        "first": 0x00832A00,
-        "last": 0x00832AFF,
-    },
-    "GridRelayStatus": {
-        "command": 0x51800200,
-        "first": 0x00416400,
-        "last": 0x004164FF,
-    },
-    "BackupRelayStatus": {
-        "command": 0x51800200,
-        "first": 0x08412500,
-        "last": 0x084125FF,
-    },
-    "GridConection": {
-        "command": 0x51800200,
-        "first": 0x0046A600,
-        "last": 0x0046A6FF,
-    },
-    "OperatingStatus": {
-        "command": 0x51800200,
-        "first": 0x08412B00,
-        "last": 0x08412BFF,
-    },
-    "GeneralOperatingStatus": {
-        "command": 0x51800200,
-        "first": 0x00412800,
-        "last": 0x004128FF,
-    },
-    "WaitingTimeUntilFeedIn": {
-        "command": 0x51000200,
-        "first": 0x00416600,
-        "last": 0x004166FF,
-    },
-    "DeviceStatus": {
-        "command": 0x51800200,
-        "first": 0x00214800,
-        "last": 0x002148FF,
-    },
-    "SpotBatteryLoad": {
-        "command": 0x54000200,
-        "first": 0x00496700,
-        "last": 0x004967FF,
-    },
-    "SpotBatteryUnload": {
-        "command": 0x54000200,
-        "first": 0x00496800,
-        "last": 0x004968FF,
-    },
-    "EM_1": {
-        "command": 0x54000200,
-        "first": 0x00462400,
-        "last": 0x004628FF,
-    },
-    "EM_2": {
-        "command": 0x54000200,
-        "first": 0x40469100,
-        "last": 0x404692FF,
-    },
-    "EM_3": {
-        "command": 0x51000200,
-        "first": 0x00463600,
-        "last": 0x004637FF,
-    },
-    "EM_4": {
-        "command": 0x51000200,
-        "first": 0x0046E800,
-        "last": 0x0046EDFF,
-    },
-    "Insulation_1": {
-        "command": 0x51020200,
-        "first": 0x00254E00,
-        "last": 0x00254FFF,
-    },
-    "Insulation_2": {
-        "command": 0x51020200,
-        "first": 0x00254F00,
-        "last": 0x00254FFF,
-    },
-    "Firmware": {
-        "command": 0x58000200,
-        "first": 0x00823400,
-        "last": 0x008234FF,
-    },
-    "energy_production": {
-        "command": 0x54000200,
-        "first": 0x00260100,
-        "last": 0x002622FF,
-    },
-    "spot_ac_power": {
-        "command": 0x51000200,
-        "first": 0x00464000,
-        "last": 0x004642FF,
-    },
-    "spot_ac_voltage": {
-        "command": 0x51000200,
-        "first": 0x00464800,
-        "last": 0x004655FF,
-    },
-}
+NO_HANDLER_FOR_MIN_TIMEDELTA = timedelta(
+    hours=24
+)  # How often to report a "known unknown" response
 
 
-@dcs.dataclass(dcs.BIG_ENDIAN)
-class speedwireHeader:
-    """Speedwire header"""
+class SMAClientProtocol(DatagramProtocol):
+    """Basic Class for communication"""
 
-    sma: Annotated[bytes, 4]
-    tag42_length: dcs.U16
-    tag42_tag0x02A0: dcs.U16
-    group1: dcs.U32
-    smanet2_length: dcs.U16
-    smanet2_tagID: dcs.U16
-    protokoll: dcs.U16
+    _commandFuture: Future[Any] | None = None
 
-    def check6065(self) -> bool:
-        """Check for 6065 Type, used by inverters. Size is not checked at this stage."""
-        return (
-            self.sma == b"SMA\x00"
-            and self.tag42_length == 4
-            and self.tag42_tag0x02A0 == 0x02A0
-            and self.group1 == 1
-            and self.smanet2_tagID == 0x10
-            and self.protokoll == 0x6065
+    debug: Dict[str, Any] = {
+        "msg": collections.deque(maxlen=len(commands) * 10),
+        "data": {},
+        "unfinished": set(),
+        "ids": set(),
+        "sendcounter": 0,
+        "resendcounter": 0,
+        "failedCounter": 0,
+        "warned": {},  # dictionary of "No handler for" addresses with timestamp of last logged message,
+        # so it can be repeated daily (instead of per poll)
+    }
+
+    def __init__(
+        self, password: str, on_connection_lost: Future, options: Dict[str, Any]
+    ):
+        self._lastSend: float = 0
+        self._firstSend: float | None = None
+        self.speedwire = SpeedwireFrame()
+        self._transport = None
+        self.password = password
+        self.on_connection_lost = on_connection_lost
+        self.cmds: list[str] = []
+        self.cmdidx = 0
+        self.future: Future | None = None
+        self.data_values: dict[str, Any] = {}
+        self.sensors: dict[str, Sensor] = {}
+        self._group = ""
+        self._resendcounter = 0
+        self._defaultRetries = int(options.get("defaultRetries", 2))
+        self._loginRetries = int(options.get("loginRetries", 3))
+        self._loggedIn = False
+        self._failedCounter = 0
+        self._sendCounter = 0
+        self._commandTimeout = float(options.get("commandTimeout", 0.5))
+        self._commandDelay = float(options.get("commandDelay", 0.0))
+        self._overallTimeout = max(
+            5 + len(commands) * (self._commandDelay) * 2,
+            (self._commandTimeout + self._commandDelay)
+            * (max(self._loginRetries, self._loginRetries) + 1),
         )
-
-    def check6069(self) -> bool:
-        """Check for 6069 Type, used by energymeters.  Size is not checked at this stage."""
-        return (
-            self.sma == b"SMA\x00"
-            and self.tag42_length == 4
-            and self.tag42_tag0x02A0 == 0x02A0
-            and self.group1 == 1
-            and self.smanet2_tagID == 0x10
-            and self.protokoll == 0x6069
+        self._overallTimeout = float(
+            options.get("overallTimeout", self._overallTimeout)
         )
+        self.allCmds: list[str] = []
+        self.allCmds.extend(commands.keys())
+        self.allCmds.remove("login")
+        self.allCmds.remove("login2")
+        self.allCmds.remove("logoff")
 
-    def __str__(self) -> str:
-        """customized output. Use hex-format for important values."""
-        return f"speedwireHeader(sma:{self.sma!r} tag42_length:{self.tag42_length} tag42_tag0x02A0:{self.tag42_tag0x02A0:#04x} group1:{self.group1} smanet2_length:{self.smanet2_length} smanet2_tagID:{self.smanet2_tagID:#02x} protokoll:{self.protokoll:#04x})"
+    def connection_made(self, transport: Any) -> None:
+        self._transport = transport
 
-    def isDiscoveryResponse(self) -> bool:
-        """Check if this message is a response to a discovery request."""
-        return (
-            self.sma == b"SMA\x00"
-            and self.tag42_length == 4
-            and self.tag42_tag0x02A0 == 0x02A0
-            and self.group1 == 1
-            and self.smanet2_length == 2
-            and self.smanet2_tagID == 0
-            and self.protokoll == 1
+    async def controller(self) -> None:
+        try:
+            if self._resendcounter == 0:
+                self.debug["sendcounter"] += 1
+                self._sendCounter += 1
+            if self._commandFuture is None:
+                raise RuntimeError("_commandFuture not send")
+            await asyncio.wait_for(self._commandFuture, timeout=self._commandTimeout)
+            self.cmdidx += 1
+            self._resendcounter = 0
+        except (asyncio.TimeoutError, RuntimeError):
+            _LOGGER.debug(f"Timeout in command. Resendcounter: {self._resendcounter}")
+            self._resendcounter += 1
+            self.debug["resendcounter"] += 1
+            retries = self._defaultRetries
+            if self.cmds[self.cmdidx] == "login":
+                retries = self._loginRetries
+            _LOGGER.debug(
+                f"Timeout in command. Resendcounter: {self._resendcounter} {retries}"
+            )
+            if self._resendcounter > retries:
+                # Giving up. Next Command
+                if self.cmds[self.cmdidx] == "login" and not self.future.done():
+                    self.future.set_exception(
+                        SmaConnectionException("Login failed! No Response from Device!")
+                    )
+                _LOGGER.debug("Timeout in command")
+                self.cmdidx += 1
+                self._resendcounter = 0
+                self._failedCounter += 1
+                self.debug["failedCounter"] += 1
+        await self._send_next_command()
+
+    def _confirm_repsonse(self, code: int = -1):
+        """Mark the commandFuture as done"""
+        if self._commandFuture is None or self._commandFuture.done():
+            _LOGGER.debug(f"unexpected message {code:08X}")
+            return
+        self._commandFuture.set_result(True)
+
+    async def start_query(self, cmds: List, future: Future, group: str) -> None:
+        self.cmds = []
+        if not self._loggedIn:
+            self.cmds.append("login")
+        self.cmds.extend(cmds)
+        self.future = future
+        self.cmdidx = 0
+        self._failedCounter = 0
+        self._sendCounter = 0
+        self._group = group
+        self.data_values = {}
+        self.sensors = {}
+        _LOGGER.debug(f"Start Query {cmds}")
+        #        _LOGGER.debug("Sending login")
+        self.debug["msg"].append(["SEND", "login"])
+        self._firstSend = time.time()
+        await self._send_next_command()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        """connection lost handler"""
+        _LOGGER.debug("Connection lost: %s %s", type(exc), exc)
+        self._loggedIn = False
+        self.on_connection_lost.set_result(True)
+
+    def _send_command(self, cmd: bytes, exceptResponse: bool = True) -> None:
+        """Send the Command"""
+        _LOGGER.debug(
+            f"Sending command [{len(cmd)}] -- {binascii.hexlify(cmd).upper()}"  # type: ignore[str-bytes-safe]
         )
+        if exceptResponse:
+            self._commandFuture = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().create_task(self.controller())
+        if self._transport is None:
+            raise RuntimeError("Transport is None")
+        self._transport.sendto(cmd)
 
+    async def logoff(self) -> None:
+        _LOGGER.debug("Sending logoff")
+        try:
+            self._send_command(self.speedwire.getLogoutFrame(0x23021923), False)
+            await asyncio.sleep(0.2)  # Wait for delayed responses
+            self._loggedIn = False
+        except RuntimeError:
+            pass
 
-@dcs.dataclass(dcs.BIG_ENDIAN)
-class speedwireData2Tag:
-    smanet2_lengthPayload: dcs.U16
-    smanet2_id: dcs.U16
-    protokoll: dcs.U16
+    async def _send_next_command(self) -> None:
+        """Send the next command in the list"""
+        if not self.future:
+            return
+        if self.cmdidx >= len(self.cmds):
+            await self.logoff()
+            if not self.future:
+                return
+            f = self.future
+            self.future = None
+            await asyncio.sleep(0.2)  # Wait for delayed responses
+            self.debug["data"] = self.data_values
+            self.cmds = []
+            self.cmdidx = 0
+            if not f.done():
+                f.set_result(True)
+            if self._firstSend:
+                self.debug["msg"].append(
+                    ["TOTAL", 0, "", round(time.time() - self._firstSend, 2)]
+                )
+                self._firstSend = None
 
-
-@dcs.dataclass(dcs.LITTLE_ENDIAN)
-class speedwireHeader6065:
-    """Speedwire Header2 for 6065 Messages."""
-
-    # https://github.com/RalfOGit/libspeedwire
-
-    #        13 Bytes     0x26/38       00106065 09A0
-    # $cmd = $cmdheader . $pktlength . $esignature . $target_ID . "0000" . $myID . "0000" . "00000000" . $spkt_ID . $cmd_ID . "00000000";
-
-    unknown09A0E0: Annotated[bytes, 2]
-    dest_susyid: dcs.U16
-    dest_serial: dcs.U32
-    dest_control: dcs.U16
-    src_susyid: dcs.U16
-    src_serial: dcs.U32
-    src_control: dcs.U16
-    error: dcs.U16
-    fragment: dcs.U16
-
-    pktId: dcs.U16
-    cmdid: dcs.U32
-    firstRegister: dcs.U32
-    lastRegister: dcs.U32
-
-    def isLoginResponse(self) -> bool:
-        """Check if this message is a response to a login request."""
-        return self.cmdid == 0xFFFD040D
-
-    def __str__(self) -> str:
-        """customized output. Use hex-format for important values."""
-        return f"speedwireHeader6065(?:{self.unknown09A0E0.hex()} Src (ID,SNR,CNT): {self.src_susyid} {self.src_serial} {self.src_control} Dest (ID,SNR,CNT): {self.dest_susyid} {self.dest_serial} {self.dest_control}   error:{self.error} fragment:{self.fragment} pktId:{self.pktId} cmdid:{self.cmdid:#010x} firstRegister:{self.firstRegister:#010x} lastRegister:{self.lastRegister:#010x})"
-
-
-@dcs.dataclass(dcs.BIG_ENDIAN)
-class speedwireHeader6069:
-    """Speedwire Header2 for 6069 Messages. 10 Bytes"""
-
-    src_susyid: dcs.U16
-    src_serial: dcs.U32
-
-    timestamp: dcs.U32  # the 4 least significant bytes from a Unix Timestamp (msec since 1970) => int(time.time * 1000) & 0xFFFFFFFF)
-
-
-@dcs.dataclass(dcs.LITTLE_ENDIAN)
-class speedwireHeader6065x010:
-    pass
-
-
-# Originally based on https://github.com/Wired-Square/sma-query/blob/main/src/sma_query_sw/commands.py
-class SpeedwireFrame:
-    """Class for the send speedwire messages"""
-
-    APP_ID = 125
-    ANY_SERIAL = 0xFFFFFFFF
-    ANY_SUSYID = 0xFFFF
-
-    # Login Timeout in seconds
-    LOGIN_TIMEOUT = 900
-
-    def get_encoded_pw(self, password: str, installer: bool = False) -> bytearray:
-        """Encodes the password"""
-        byte_password = bytearray(password.encode("ascii"))
-
-        if installer:
-            login_code = 0xBB
         else:
-            login_code = 0x88
+            if self._resendcounter == 0:
+                await asyncio.sleep(self._commandDelay)
+            # Send the next command
+            try:
+                self.debug["msg"].append(["SEND", self.cmds[self.cmdidx]])
+                _LOGGER.debug("Sending " + self.cmds[self.cmdidx])
+                self._lastSend = time.time()
+                if (self.cmds[self.cmdidx]) == "login":
+                    groupidx = ["user", "installer"].index(self._group) == 1
+                    self._send_command(
+                        self.speedwire.getLoginFrame(
+                            self.password, 0x23021923, groupidx
+                        )
+                    )
+                else:
+                    self._send_command(
+                        self.speedwire.getQueryFrame(0x23021923, self.cmds[self.cmdidx])
+                    )
+            except IndexError:
+                pass
 
-        encodedpw = bytearray(12)
+    def _getFormat(self, handler: dict) -> tuple:
+        """Return the necessary information for extracting the information"""
+        converter = None
+        format = handler.get("format", "")
+        if format == "int":
+            format = "<l"
+        elif format == "" or format == "uint":
+            format = "<L"
+        elif format == "version":
+            format = "<L"
+            converter = version_int_to_string
+        else:
+            raise ValueError(f"Unknown Format {format}")
+        size = struct.calcsize(format)
+        return (format, size, converter)
 
-        for index in range(0, 12):
-            if index < len(byte_password):
-                encodedpw[index] = (login_code + byte_password[index]) % 256
+    def handle_login(self, msg: speedwireHeader6065) -> None:
+        """Is called if a login response is received"""
+        _LOGGER.debug("Login rppsonse received!")
+        self.sensors = {}
+        self.data_values = {"error": msg.error}
+        self.data_values["serial"] = str(msg.src_serial)
+        if msg.error == 256:
+            _LOGGER.error("Login failed!")
+            if self.future:
+                self.future.set_exception(
+                    SmaAuthenticationException(
+                        "Login failed! Credentials wrong (user/install or password)"
+                    )
+                )
+        else:
+            self._loggedIn = True
+
+    def handle_newvalue(self, sensor: Sensor, value: Any, overwrite: bool) -> None:
+        """Set the new value to the sensor"""
+        if value is None:
+            return
+        sen = copy.copy(sensor)
+        if sen.factor and sen.factor != 1:
+            value /= sen.factor
+        sen.value = value
+        if sen.key in self.sensors:
+            oldValue = self.sensors[sen.key].value
+            if oldValue != value:
+                # _LOGGER.warning(
+                #     f"Sensors {sen.key} {sen.name} Old Value: {oldValue} New values: {sen.value} Overwrite: {overwrite}"
+                # )
+                if not overwrite:
+                    value = oldValue
+        self.sensors[sen.key] = sen
+        self.data_values[sen.key] = value
+
+    def extractvalues(self, handler: Dict, subdata: bytes) -> list[Any]:
+        (formatdef, size, converter) = self._getFormat(handler)
+        values = []
+        for idx in range(8, len(subdata), size):
+            v = struct.unpack(formatdef, subdata[idx : idx + size])[0]
+            if v in [0xFFFFFFFF, 0x80000000, 0xFFFFFFEC, -0x80000000, 0xFFFFFE]:
+                v = None
             else:
-                encodedpw[index] = login_code
+                if converter:
+                    v = converter(v)
+                if "mask" in handler:
+                    v = v & handler["mask"]
+            values.append(v)
+        return values
 
-        return encodedpw
+    def fixID(self, orig: str) -> str:
+        if orig in responseDef:
+            return orig
+        for code in responseDef.keys():
+            if code[0:7] == orig[:7]:
+                return code
+        return orig
 
-    _frame_sequence = 1
-    _id = (ctypes.c_ubyte * 4).from_buffer(bytearray(b"SMA\x00"))
-    _tag0 = (ctypes.c_ubyte * 4).from_buffer(bytearray(b"\x00\x04\x02\xA0"))
-    _group1 = (ctypes.c_ubyte * 4).from_buffer(bytearray(b"\x00\x00\x00\x01"))
-    _eth_sig = (ctypes.c_ubyte * 4).from_buffer(bytearray(b"\x00\x10\x60\x65"))
-    _ctrl2_1 = (ctypes.c_ubyte * 2).from_buffer(bytearray(b"\x00\x01"))
-    _ctrl2_2 = (ctypes.c_ubyte * 2).from_buffer(bytearray(b"\x00\x01"))
+    def handle_register(self, subdata: bytes, register_idx: int) -> None:
+        """Handle the payload with all the registers"""
+        code = int.from_bytes(subdata[0:4], "little")
+        # c = f"{(code & 0xFFFFFFFF):08X}"
+        c = f"{code:08X}"
+        msec = int.from_bytes(subdata[4:8], "little")  # noqa: F841
 
-    _data_length = 0  # Placeholder value
-    _longwords = 0  # Placeholder value
-    _ctrl = 0  # Placeholder value
+        # Fix for strange response codes
+        self.debug["ids"].add(c[6:])
+        self._id = c[6:]
+        c = self.fixID(c)
 
-    class FrameHeader(LittleEndianStructure):
-        """Frame Header"""
+        # Handle unknown Responses
+        if c not in responseDef:
+            values = []
+            valuesPos = []
+            for idx in range(8, len(subdata), 4):
+                v = struct.unpack("<l", subdata[idx : idx + 4])[0]
+                values.append(v)
+                valuesPos.append(f"{idx + 54}")
+            # check if the value 'c' was already logged within the last 24 hrs (TIMEDELTA def above)
 
-        _pack_ = 1
-        _fields_ = [
-            ("id", ctypes.c_ubyte * 4),
-            ("tag0", ctypes.c_ubyte * 4),
-            ("group1", ctypes.c_ubyte * 4),
-            ("data_length", ctypes.c_uint16),
-            ("eth_sig", ctypes.c_ubyte * 4),
-            ("longwords", ctypes.c_ubyte),
-            ("ctrl", ctypes.c_ubyte),
-        ]
+            if (ts := self.debug.get("warned", {}).get(c)) and ts > (
+                datetime.now() - NO_HANDLER_FOR_MIN_TIMEDELTA
+            ):
+                # do not warn again
+                # it also already known to "unfinished" set
+                return
 
-    class DataHeader(LittleEndianStructure):
-        # pylint: disable=too-few-public-methods
-        """Data header"""
-        _pack_ = 1
-        _fields_ = [
-            ("dst_sysyid", ctypes.c_uint16),
-            ("dst_serial", ctypes.c_uint32),
-            ("ctrl2_1", ctypes.c_ubyte * 2),
-            ("app_id", ctypes.c_uint16),
-            ("app_serial", ctypes.c_uint32),
-            ("ctrl2_2", ctypes.c_ubyte * 2),
-            ("preamble", ctypes.c_uint32),
-            ("sequence", ctypes.c_uint16),
-        ]
+            _LOGGER.debug(f"No Handler for {c}: {values} @ {valuesPos}")
+            self.debug["unfinished"].add(f"{c}")
+            self.debug["warned"][
+                c
+            ] = datetime.now()  # add to known unknowns that have been warned
+            return
 
-    class LogoutFrame(LittleEndianStructure):
-        # pylint: disable=too-few-public-methods
-        """Logout"""
-        _pack_ = 1
-        _fields_ = [
-            ("command", ctypes.c_uint32),
-            ("data_start", ctypes.c_uint32),
-            ("data_end", ctypes.c_uint32),
-        ]
+        # Handle known repsones
+        for handler in responseDef[c]:
+            values = self.extractvalues(handler, subdata)
+            if "sensor" not in handler:
+                continue
+            v = None
+            if handler["idx"] == 0xFF:
+                """For some responses, a list is returned and the correct value
+                within this list is marked by the top 8 bits."""
+                for origValue in values:
+                    if origValue is not None and (origValue & 0xFF000000) > 0:
+                        v = origValue & 0x00FFFFFF
+                        break
+            else:
+                v = values[handler["idx"]]
 
-    class LoginFrame(LittleEndianStructure):
-        # pylint: disable=too-few-public-methods
-        """Login"""
-        _pack_ = 1
-        _fields_ = [
-            ("command", ctypes.c_uint32),
-            ("login_type", ctypes.c_uint32),
-            ("timeout", ctypes.c_uint32),
-            ("time", ctypes.c_uint32),
-            ("data_start", ctypes.c_uint32),
-            ("user_password", ctypes.c_ubyte * 12),
-            ("data_end", ctypes.c_uint32),
-        ]
+            sensor = handler["sensor"]
 
-    class QueryFrame(LittleEndianStructure):
-        # pylint: disable=too-few-public-methods
-        """Query Frame"""
+            # Special handling for a response that returns two values under the same code
+            if isinstance(sensor, List):
+                if register_idx >= len(sensor):
+                    _LOGGER.warning(
+                        f"No Handler for {c} at register idx {register_idx}: {values}"
+                    )
+                    continue
+                _LOGGER.debug(
+                    f"Special Handler for {c} at register idx {register_idx}: {values}"
+                )
+                sensor = sensor[register_idx]
+            _LOGGER.debug(
+                f"ID: {self._id} Values {sensor.name}/{sensor.key}: {v} {values}"
+            )
+            self.handle_newvalue(sensor, v, handler.get("overwrite", True))
 
-        _pack_ = 1
-        _fields_ = [
-            ("command", ctypes.c_uint32),
-            ("first", ctypes.c_uint32),
-            ("last", ctypes.c_uint32),
-            ("data_end", ctypes.c_uint32),
-        ]
-
-    def getLogoutFrame(self, serial):
-        frame_header = self.getFrameHeader()
-        frame_data_header = self.getDataHeader(serial)
-        frame_data = self.LogoutFrame()
-
-        frame_header.ctrl = 0xA0
-        frame_data_header.dst_sysyid = 0xFFFF
-        frame_data_header.ctrl2_1 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x03")
+    # Unfortunately, there is no known method of determining the size of the registers
+    # from the message. Therefore, the register size is determined from the number of
+    # registers and the size of the payload.
+    def calc_register(self, data: bytes, msg: speedwireHeader6065) -> tuple:
+        cnt_registers = msg.lastRegister - msg.firstRegister + 1
+        size_datapayload = len(data) - 54 - 4
+        size_registers = (
+            size_datapayload // cnt_registers
+            if size_datapayload % cnt_registers == 0
+            else -1
         )
-        frame_data_header.ctrl2_2 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x03")
-        )
+        return (cnt_registers, size_registers)
 
-        frame_data.command = commands["logoff"]["command"]
-        frame_data.data_start = 0xFFFFFFFF
-        frame_data.data_end = 0x00000000
-
-        data_length = ctypes.sizeof(frame_data_header) + ctypes.sizeof(frame_data)
-
-        frame_header.data_length = int.from_bytes(
-            data_length.to_bytes(2, "big"), "little"
-        )
-
-        frame_header.longwords = data_length // 4
-
-        return bytes(frame_header) + bytes(frame_data_header) + bytes(frame_data)
-
-    def getLoginFrame(self, password: str, serial: int, installer: bool) -> bytes:
-        # pylint: disable=too-few-public-methods
-        """Returns a Login Frame"""
-        frame_header = self.getFrameHeader()
-        frame_data_header = self.getDataHeader(serial)
-        frame_data = self.LoginFrame()
-
-        frame_header.ctrl = 0xA0
-        frame_data_header.dst_sysyid = 0xFFFF
-        frame_data_header.ctrl2_1 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x01")
-        )
-        frame_data_header.ctrl2_2 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x01")
+    # Main routine for processing received messages.
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        _LOGGER.debug(f"RECV: {addr} Len:{len(data)} {binascii.hexlify(data).upper()}")  # type: ignore[str-bytes-safe]
+        delta = 0.0
+        if self._lastSend > 0:
+            delta = time.time() - self._lastSend
+            self._lastSend = 0
+        self.debug["msg"].append(
+            [
+                "RECV",
+                len(data),
+                binascii.hexlify(data).upper().decode("utf-8"),
+                round(delta, 2),
+            ]
         )
 
-        frame_data.command = commands["login"]["command"]
-        frame_data.login_type = (0x07, 0x0A)[installer]
-        frame_data.timeout = self.LOGIN_TIMEOUT
-        frame_data.time = int(time.time())
-        frame_data.data_start = 0x00000000  # Data Start
-        frame_data.user_password = (ctypes.c_ubyte * 12).from_buffer(
-            self.get_encoded_pw(password, installer)
+        # Check if message is a 6065 protocol
+        msg = speedwireHeader.from_packed(data[0:18])
+        if not msg.check6065():
+            _LOGGER.debug("Ignoring non 6065 Response. %d", msg.protokoll)
+            return
+
+        # If the requested information is not available, send the next command,
+        if len(data) < 58:
+            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            self._confirm_repsonse()
+            return
+
+        # Handle Login Responses
+        msg6065 = speedwireHeader6065.from_packed(data[18 : 18 + 36])
+        if msg6065.isLoginResponse():
+            self.handle_login(msg6065)
+            self._confirm_repsonse()
+            return
+
+        # Filter out non matching responses
+        (cnt_registers, size_registers) = self.calc_register(data, msg6065)
+        code = int.from_bytes(data[54:58], "little")
+        codem = code & 0x00FFFF00
+        if len(data) == 58 and codem == 0:
+            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            self._confirm_repsonse()
+            return
+        if size_registers <= 0 or size_registers not in [16, 28, 40]:
+            _LOGGER.warning(
+                f"Skipping message. --- Len {data!r} Ril {codem} {cnt_registers} x {size_registers} bytes"
+            )
+            self._confirm_repsonse(code)
+            return
+
+        # Extract the values for each register
+        for idx in range(0, cnt_registers):
+            start = idx * size_registers + 54
+            self.handle_register(data[start : start + size_registers], idx)
+
+        self._confirm_repsonse(code)
+
+
+class SMAspeedwireINV(Device):
+    """Adapter between Device-Class and SMAClientProtocol"""
+
+    _options: Dict[str, Any] = {}
+    _transport = None
+    _protocol = None
+    _deviceinfo: DeviceInformation
+    _debug: Dict[str, Any] = {"overalltimeout": 0}
+
+    def __init__(self, host: str, group: str, password: Optional[str]):
+        self._host = host
+        self._group = group
+        self._password = password
+        if group not in ["user", "installer"]:
+            raise KeyError(f"Invalid user type: {group} (user or installer)")
+
+    async def _createEndpoint(self) -> None:
+        if self._protocol is not None:
+            # _LOGGER.debug("Protocol already created")
+            return
+        loop = asyncio.get_running_loop()
+        on_connection_lost = loop.create_future()
+        if not self._password:
+            raise ValueError("Password not set!")
+        if len(self._password) > 12:
+            raise ValueError("Password to long! Max 12 Characters.")
+        self._transport, self._protocol = await loop.create_datagram_endpoint(
+            lambda: SMAClientProtocol(
+                self._password,  # type: ignore[arg-type]
+                on_connection_lost,
+                self._options,
+            ),
+            remote_addr=(self._host, 9522),
         )
-        frame_data.date_end = 0x00000000  # Packet End
 
-        data_length = ctypes.sizeof(frame_data_header) + ctypes.sizeof(frame_data)
+    # @override
+    async def new_session(self) -> bool:
+        # Create Endpoint
+        await self._createEndpoint()
+        if self._protocol is None:
+            raise SmaConnectionException("protocol not initialized")
 
-        frame_header.data_length = int.from_bytes(
-            data_length.to_bytes(2, "big"), "little"
+        self._protocol._failedCounter = 0
+        self._protocol._sendCounter = 0
+        # Test with device_info if the ip and user/pwd are correct
+        await self.device_info()
+        if self._protocol._failedCounter >= self._protocol._sendCounter:
+            raise SmaConnectionException(
+                f"No connection to device: {self._host}:9522  ({self._protocol._failedCounter}/{self._protocol._sendCounter})"
+            )
+        return True
+
+    # @override
+    async def device_info(self) -> dict:
+        ll = await self.device_list()
+        return list(ll.values())[0].asDict()
+
+    # @override
+    async def device_list(self) -> dict[str, DeviceInformation]:
+        if self._protocol is None:
+            raise SmaConnectionException("protocol not initialized")
+
+        fut = asyncio.get_running_loop().create_future()
+        await self._protocol.start_query(["TypeLabel", "Firmware"], fut, self._group)
+        try:
+            await asyncio.wait_for(fut, timeout=self._protocol._overallTimeout)
+        except TimeoutError:
+            self._debug["overalltimeout"] += 1
+            _LOGGER.warning("Timeout in device_info")
+            if (
+                "error" in self._protocol.data_values
+                and self._protocol.data_values["error"] == 0
+            ):
+                raise SmaReadException(
+                    "Reply for request not received"
+                )  # Recheck Logic
+            raise SmaConnectionException("No connection to device")
+        data = self._protocol.data_values
+
+        invcnr = data.get("inverter_class", 0)
+        invc = SMATagList.get(invcnr, f"Unknown device ({invcnr})")
+
+        invtnr = data.get("inverter_type", 0)
+        invt = SMATagList.get(invtnr, f"Unknown type ({invtnr})")
+
+        self._deviceinfo = DeviceInformation(
+            data.get("serial", ""),
+            data.get("serial", ""),
+            str(invt),
+            str(invc),
+            "SMA",
+            data.get("Firmware", ""),
         )
+        return {data.get("serial", ""): self._deviceinfo}
 
-        frame_header.longwords = data_length // 4
+    # @override
+    async def get_sensors(self, deviceID: str | None = None) -> Sensors:
+        if self._protocol is None:
+            raise SmaConnectionException("protocol not initialized")
 
-        return bytes(frame_header) + bytes(frame_data_header) + bytes(frame_data)
+        fut = asyncio.get_running_loop().create_future()
+        c = self._protocol.allCmds
+        device_sensors = Sensors()
+        try:
+            await self._protocol.start_query(c, fut, self._group)
+            await asyncio.wait_for(fut, timeout=self._protocol._overallTimeout)
+            for s in self._protocol.sensors.values():
+                device_sensors.add(s)
+        except asyncio.TimeoutError as e:
+            self._debug["overalltimeout"] += 1
+            raise e
+        return device_sensors
 
-    def getQueryFrame(self, serial: int, command_name: str) -> bytes:
-        """Return Query Frame"""
-        frame_header = self.getFrameHeader()
-        frame_data_header = self.getDataHeader(serial)
-        frame_data = self.QueryFrame()
+    # @override
+    async def read(self, sensors: Sensors, deviceID: str | None = None) -> bool:
+        if self._protocol is None:
+            raise SmaConnectionException("protocol not initialized")
 
-        command = commands[command_name]
+        fut = asyncio.get_running_loop().create_future()
+        c = self._protocol.allCmds
+        await self._protocol.start_query(c, fut, self._group)
+        try:
+            await asyncio.wait_for(fut, timeout=self._protocol._overallTimeout)
+            self._update_sensors(sensors, self._protocol.sensors, deviceID)
+            return True
+        except asyncio.TimeoutError as e:
+            self._debug["overalltimeout"] += 1
+            raise e
 
-        frame_header.ctrl = 0xA0
-        frame_data_header.dst_sysyid = 0xFFFF
-        frame_data_header.ctrl2_1 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x00")
-        )
-        frame_data_header.ctrl2_2 = (ctypes.c_ubyte * 2).from_buffer(
-            bytearray(b"\x00\x00")
-        )
+    def _update_sensors(
+        self, sensors: Sensors, sensorReadings: dict[str, Sensor], deviceID: str | None
+    ) -> None:
+        """Update a sensor with the sensor reading"""
+        _LOGGER.debug("Received %d sensor readings", len(sensorReadings))
+        for sen in sensors:
+            if sen.enabled and sen.key in sensorReadings:
+                value = sensorReadings[sen.key].value
+                if sen.mapper:
+                    sen.mapped_value = sen.mapper.get(value, str(value))
+                sen.value = value
 
-        frame_data.command = command["command"]
-        frame_data.first = command["first"]
-        frame_data.last = command["last"]
-        frame_data.date_end = 0x00000000
+    async def close_session(self) -> None:
+        if self._transport is not None:
+            await self._protocol.logoff()
+            self._transport.close()
+            self._trasport = None
 
-        data_length = ctypes.sizeof(frame_data_header) + ctypes.sizeof(frame_data)
+    async def get_debug(self) -> Dict:
+        if self._protocol is None:
+            raise SmaConnectionException("protocol not initialized")
 
-        frame_header.data_length = int.from_bytes(
-            data_length.to_bytes(2, "big"), "little"
-        )
+        ret = self._protocol.debug.copy()
+        ret["unfinished"] = list(ret["unfinished"])
+        ret["msg"] = list(ret["msg"])
+        ret["ids"] = list(ret["ids"])
+        ret["device_info"] = self._deviceinfo
+        ret["timeouts"] = self._debug["overalltimeout"]
+        return ret
 
-        frame_header.longwords = data_length // 4
+    # wait for a response or a timeout
+    async def detect(self, ip: str) -> list[DiscoveryInformation]:
+        di = DiscoveryInformation()
+        di.tested_endpoints = str(ip) + ":9522"
+        try:
+            await self.new_session()
+            if self._protocol is None:
+                raise SmaConnectionException("protocol not initialized")
+            fut = asyncio.get_running_loop().create_future()
+            await self._protocol.start_query(["TypeLabel"], fut, self._group)
+            try:
+                await asyncio.wait_for(fut, timeout=5)
+            except TimeoutError:
+                _LOGGER.warning("Timeout in detect")
+            if (
+                "error" in self._protocol.data_values
+                and self._protocol.data_values["error"] == 0
+            ):
+                raise SmaReadException("Reply for request not received")
+            raise SmaConnectionException("No connection to device")
+        except SmaAuthenticationException as e:
+            di.status = "maybe"
+            di.exception = e
+            di.remark = "only unencrypted Speedwire is supported"
+        except Exception as e:
+            di.status = "failed"
+            di.exception = e
+        return [di]
 
-        return bytes(frame_header) + bytes(frame_data_header) + bytes(frame_data)
-
-    def getFrameHeader(self) -> FrameHeader:
-        """Return Frame Header"""
-        newFrameHeader = self.FrameHeader()
-        newFrameHeader.id = self._id
-        newFrameHeader.tag0 = self._tag0
-        newFrameHeader.group1 = self._group1
-        newFrameHeader.data_length = self._data_length
-        newFrameHeader.eth_sig = self._eth_sig
-        newFrameHeader.longwords = self._longwords
-        newFrameHeader.ctrl = self._ctrl
-
-        return newFrameHeader
-
-    def getDataHeader(self, serial: int) -> DataHeader:
-        """Return Data Header"""
-        newDataHeader = self.DataHeader()
-
-        newDataHeader.dst_susyid = self.ANY_SUSYID
-        newDataHeader.dst_serial = self.ANY_SERIAL
-        newDataHeader.ctrl2_1 = self._ctrl2_1
-        newDataHeader.app_id = self.APP_ID
-        newDataHeader.app_serial = serial
-        newDataHeader.ctrl2_2 = self._ctrl2_2
-        newDataHeader.preamble = 0
-        newDataHeader.sequence = self._frame_sequence | 0x8000
-
-        self._frame_sequence += 1
-
-        return newDataHeader
+    def set_options(self, options: Dict[str, Any]) -> None:
+        self._options = options
