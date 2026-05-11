@@ -26,7 +26,7 @@ from .const_webconnect import (
     OPTIMIZERS_VIA_INVERTER,
     URL_ALL_PARAMS,
     URL_ALL_VALUES,
-    URL_DASH_LOGGER,
+    URL_DASH_LOGGERGER,
     URL_DASH_VALUES,
     URL_LOGGER,
     URL_LOGIN,
@@ -359,7 +359,7 @@ class SMAwebconnect(Device):
         Returns:
             dict: Dictionary containing loggers returned by device.
         """
-        return await self._read_body(URL_DASH_LOGGER, {"destDev": [], "key": []})
+        return await self._read_body(URL_DASH_LOGGERGER, {"destDev": [], "key": []})
 
     async def read_logger(self, log_id: int, start: int, end: int) -> list:
         """Read a logging key and return the results.
