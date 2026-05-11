@@ -11,7 +11,7 @@ import jmespath  # type: ignore
 from .const import SMATagList
 from .const_webconnect import JMESPATH_VAL, JMESPATH_VAL_IDX, JMESPATH_VAL_STR
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,7 +78,7 @@ class Sensor:
         try:
             res = result_body[self.key]
         except (KeyError, TypeError):
-            _LOGGER.warning("Sensor %s: Not found in %s", self.key, result_body)
+            _LOG.warning("Sensor %s: Not found in %s", self.key, result_body)
             res = self.value
             self.value = None
             return self.value != res
@@ -97,7 +97,7 @@ class Sensor:
                 _path = _paths.pop()
                 _val = jmespath.search(_path, res)
                 if _val is not None:
-                    _LOGGER.debug(
+                    _LOG.debug(
                         "Sensor %s: Will be decoded with %s from %s",
                         self.name,
                         _path,
@@ -130,7 +130,7 @@ class Sensor:
                 if len(res.keys()) == 1:
                     self.webconnect_deviceId = list(res.keys())[0]
         else:
-            _LOGGER.debug(
+            _LOG.debug(
                 "Sensor %s: No successful value decoded yet: %s", self.name, res
             )
             ret = None
@@ -251,10 +251,10 @@ class Sensors:
         if sensor.name and sensor.name in self:
             old = self[sensor.name]
             self.__s.remove(old)
-            _LOGGER.warning("Replacing sensor %s with %s", old, sensor)
+            _LOG.warning("Replacing sensor %s with %s", old, sensor)
 
         if sensor.key in self and self[sensor.key].key_idx == sensor.key_idx:
-            _LOGGER.warning(
+            _LOG.warning(
                 "Duplicate SMA sensor key %s (idx: %s)", sensor.key, sensor.key_idx
             )
 

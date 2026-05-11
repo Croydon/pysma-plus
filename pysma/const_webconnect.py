@@ -6,8 +6,8 @@ URL_VALUES = "/dyn/getValues.json"
 URL_SETPARAMETER = "/dyn/setParamValues.json"
 URL_ALL_VALUES = "/dyn/getAllOnlValues.json"
 URL_ALL_PARAMS = "/dyn/getAllParamValues.json"
-URL_LOGGER = "/dyn/getLogger.json"
-URL_DASH_LOGGER = "/dyn/getDashLogger.json"
+URL_LOG = "/dyn/getLogger.json"
+URL_DASH_LOG = "/dyn/getDashLogger.json"
 URL_DASH_VALUES = "/dyn/getDashValues.json"
 
 USERS = {"user": "usr", "installer": "istl"}

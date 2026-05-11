@@ -7,7 +7,7 @@ from typing import cast
 BROADCAST_PORT = 1900
 BROADCAST_ADDR = "239.255.255.250"
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class UPNPResponderProtocol(asyncio.Protocol):
@@ -112,12 +112,12 @@ class UPNPResponderProtocol(asyncio.Protocol):
 
     def error_received(self, exc: Exception) -> None:
         """Log UPNP errors."""
-        _LOGGER.error("UPNP Error received: %s", exc)
+        _LOG.error("UPNP Error received: %s", exc)
 
     def close(self) -> None:
         """Stop the server."""
         # TODO Deregister Messages
-        _LOGGER.info("UPNP responder shutting down")
+        _LOG.info("UPNP responder shutting down")
         if self.transport:
             self.transport.close()
         self._loop.remove_writer(self._sock.fileno())

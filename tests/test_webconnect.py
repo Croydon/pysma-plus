@@ -18,7 +18,7 @@ from pysma.sensor import Sensors
 
 from . import MOCK_DEVICE, MOCK_L10N, SMA_TESTDATA, mock_aioresponse  # noqa: F401
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class Test_SMA_class:
@@ -74,7 +74,7 @@ class Test_SMA_class:
         with pytest.raises(SmaConnectionException):
             await sma._get_json("/dummy-url")
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_request_json_invalid_json(
         self, mock_warn, mock_aioresponse  # noqa: F811
     ):
@@ -90,7 +90,7 @@ class Test_SMA_class:
         assert json == {}
         assert mock_warn.call_count == 1
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_read_no_password(self, mock_warn, mock_aioresponse):  # noqa: F811
         """Test read_body without password."""
         mock_aioresponse.post(
@@ -117,7 +117,7 @@ class Test_SMA_class:
         assert sensors["6800_08822000"].value == "Sunny Boy 3.6"
         assert mock_warn.call_count == 0
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_read_body_error(self, mock_warn, mock_aioresponse):  # noqa: F811
         """Test read_body with SmaReadException."""
         mock_aioresponse.post(
@@ -130,7 +130,7 @@ class Test_SMA_class:
             await sma._read_body("/dyn/getValues.json", payload={"dummy": "payload"})
         assert mock_warn.call_count == 1
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_read_body_unexpected(
         self, mock_warn, mock_aioresponse  # noqa: F811
     ):
@@ -236,7 +236,7 @@ class Test_SMA_class:
         with pytest.raises(SmaReadException):
             await sma.read_logger(28704, 1622592000, 1622491200)
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_new_session(self, mock_warn, mock_aioresponse):  # noqa: F811
         """Test new_session."""
         mock_aioresponse.post(
@@ -267,7 +267,7 @@ class Test_SMA_class:
         with pytest.raises(SmaAuthenticationException):
             await sma.new_session()
 
-    @patch("pysma.device_webconnect._LOGGER.error")
+    @patch("pysma.device_webconnect._LOG.error")
     async def test_new_session_error(self, mock_error, mock_aioresponse):  # noqa: F811
         """Test new_session with error."""
         session = aiohttp.ClientSession()
@@ -459,7 +459,7 @@ class Test_SMA_class:
                 headers={"content-type": "application/json"},
             )
 
-    @patch("pysma.device_webconnect._LOGGER.warning")
+    @patch("pysma.device_webconnect._LOG.warning")
     async def test_unsupported_lang(self, mock_warn, mock_aioresponse):  # noqa: F811
         """Test fallback lang in case requested lang is not available."""
         mock_aioresponse.get(

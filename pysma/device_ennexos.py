@@ -24,7 +24,7 @@ from .exceptions import (
 from .helpers import splitUrl
 from .sensor import Sensor, Sensor_Range, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,7 +72,7 @@ class SMAennexos(Device):
         self._url = destination["schema"] + "://" + destination["host"]
         if destination["port"] is not None:
             self._url = self._url + ":" + str(destination["port"])
-        _LOGGER.debug(f"Ennexos {url} => {self._url}")
+        _LOG.debug(f"Ennexos {url} => {self._url}")
         self._new_session_data = {"user": group, "pass": password}
         self._aio_session = session
 
@@ -97,28 +97,28 @@ class SMAennexos(Device):
             async with self._aio_session.request(
                 method, url, timeout=ClientTimeout(total=DEFAULT_TIMEOUT), **parameters
             ) as res:
-                _LOGGER.debug(f"Request {url} Code {res.status}")
+                _LOG.debug(f"Request {url} Code {res.status}")
                 if res.status == 200:
                     resjson = await res.json()
                     return resjson
                 elif res.status == 401 or res.status == 400:
                     resjson = await res.json()
-                    _LOGGER.error("Error " + str(res.status))
-                    _LOGGER.error(resjson)
+                    _LOG.error("Error " + str(res.status))
+                    _LOG.error(resjson)
                     raise SmaAuthenticationException("Token failed!")
                 else:
-                    _LOGGER.warning("HTTP-Error %d for %s", res.status, url)
+                    _LOG.warning("HTTP-Error %d for %s", res.status, url)
                     return {}
         except SmaAuthenticationException as e:
             raise e
         except (client_exceptions.ContentTypeError, json.decoder.JSONDecodeError):
-            _LOGGER.error(
+            _LOG.error(
                 "Request to %s did not return a valid json. Code %d", url, res.status
             )
             if res.status == 401:
                 raise SmaAuthenticationException("Token failed and no json response!")
         except client_exceptions.ServerDisconnectedError as exc:
-            _LOGGER.error(
+            _LOG.error(
                 f"Timeout while requesting {url} {exc}. (Probably wrong ip, wrong hostname or wrong setting for http/https)"
             )
             raise SmaConnectionException(
@@ -129,7 +129,7 @@ class SMAennexos(Device):
             asyncio.exceptions.TimeoutError,
         ) as exc:
             if "/api/v1/featuretoggles" not in url:
-                _LOGGER.error(f"Error requesting {url} {exc} [Timeout]")
+                _LOG.error(f"Error requesting {url} {exc} [Timeout]")
             raise SmaConnectionException(
                 f"Could not connect to SMA at {self._url} -- {exc}"
             ) from exc
@@ -143,9 +143,9 @@ class SMAennexos(Device):
             bool: authentication successful
         """
         if self._new_session_data is None:
-            _LOGGER.error("User & Pwd not set!")
+            _LOG.error("User & Pwd not set!")
             return False
-        _LOGGER.debug(f'Trying to login {self._url} {self._new_session_data["user"]}')
+        _LOG.debug(f'Trying to login {self._url} {self._new_session_data["user"]}')
         loginurl = self._url + "/api/v1/token"
         postdata = {
             "data": {
@@ -156,13 +156,13 @@ class SMAennexos(Device):
         }
         ret = await self._jsonrequest(loginurl, postdata)
         if "access_token" not in ret:
-            _LOGGER.debug(f"Login failed {ret}")
+            _LOG.debug(f"Login failed {ret}")
             raise SmaAuthenticationException("Login failed!")
         self._authorization_header = {
             "Authorization": "Bearer " + ret["access_token"],
             "Content-Type": "application/json",
         }
-        _LOGGER.debug("Login successful")
+        _LOG.debug("Login successful")
 
         for u in [
             "/api/v1/plants/Plant:1",
@@ -211,7 +211,7 @@ class SMAennexos(Device):
     ) -> Dict[str, Dict[str, Any]]:
         data: Dict[str, Dict[str, Any]] = {}
         if len(ret) != 1:
-            _LOGGER.warning(
+            _LOG.warning(
                 "Uncommon length of array in parameters request: %d", len(ret)
             )
 
@@ -319,7 +319,7 @@ class SMAennexos(Device):
 
         # Mark sure this function get called at least once
         ret = await self._get_all_readings(deviceID)
-        _LOGGER.debug("Found Sensors for %s: %d", deviceID, len(ret))
+        _LOG.debug("Found Sensors for %s: %d", deviceID, len(ret))
         profile = await self._get_sensor_profile(deviceID)
         return profile
 
@@ -331,13 +331,13 @@ class SMAennexos(Device):
         productTagId = int(dev.additional.get("productTagId", 0))
         profile = getSensorForDevice(productTagId)
         if not profile:
-            _LOGGER.error(
+            _LOG.error(
                 f"Unknown Device: {productTagId} N:{dev.name} T:{dev.type} ID:{deviceID}. Please report to the author of pysmaplus."
             )
             return device_sensors
         expected_sensors, unknown = profile
         if len(unknown) > 0:
-            _LOGGER.debug(f"Missing Sensors in Profile {productTagId}: {unknown}")
+            _LOG.debug(f"Missing Sensors in Profile {productTagId}: {unknown}")
             self._debug.profilemissing[deviceID] = unknown
         # Add Sensors from profile
         for s in expected_sensors:
@@ -395,7 +395,7 @@ class SMAennexos(Device):
             data = await self._get_all_readings(deviceID)
         except SmaAuthenticationException:
             # Relogin
-            _LOGGER.debug("Re-login .. Starting new Session")
+            _LOG.debug("Re-login .. Starting new Session")
             await self.new_session()
             data = await self._get_all_readings(deviceID)
         for sen in sensors:
@@ -417,7 +417,7 @@ class SMAennexos(Device):
 
         notfound = [x for x in notfound if x not in self._debug.last_notfound[deviceID]]
         if len(notfound) > 0:
-            _LOGGER.info(
+            _LOG.info(
                 "No values for sensors: %s",
                 ",".join(notfound),
             )
@@ -542,7 +542,7 @@ class SMAennexos(Device):
                 print(f"Option {key}: {self._componentId} => {value}")
                 self._componentId = value
             else:
-                _LOGGER.error("Unknown Options: %s %s", key, value)
+                _LOG.error("Unknown Options: %s %s", key, value)
 
     async def _get_timestamp(self) -> str:
         """Returns the time in a format as required by the put instruction."""

@@ -24,7 +24,7 @@ from .device import sempDevice
 from .RendererStatusPage import statusPageRenderer
 from .sempxsd import sempxsd
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -89,7 +89,7 @@ class SEMPhttpServer:
             # if end_of_http_chunk:
             #     print(buffer)
         #        try:
-        _LOGGER.info(buffer)
+        _LOG.info(buffer)
         print(buffer)
         #  '<EM2Device xmlns="http://www.sma.de/communication/schema/SEMP/v1"><DeviceControl>
         # <DeviceId>F-00000001-000000000002-00</DeviceId>
@@ -126,10 +126,10 @@ class SEMPhttpServer:
         # if devId.startswith("F-11223344-") and devId.endswith("-00"):
         #     devId = devId[2 + 8 + 1 : -3]
         # else:
-        #     _LOGGER.warning(f"Unknown device id received {devId}")
+        #     _LOG.warning(f"Unknown device id received {devId}")
         if self.callback:
             shortDevId = devId[2 + 8 + 1 : -3]
-            _LOGGER.info(f"Command received {onoffBool} {devId} {shortDevId}")
+            _LOG.info(f"Command received {onoffBool} {devId} {shortDevId}")
             await self.callback(callbackAction(devId, shortDevId, onoffBool))
         return web.Response(text="", content_type="text/xml")
 

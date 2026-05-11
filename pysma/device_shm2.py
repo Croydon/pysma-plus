@@ -18,7 +18,7 @@ from .exceptions import (
 from .helpers import isInteger, splitUrl
 from .sensor import Sensor, Sensor_Range, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,18 +126,18 @@ class SHM2(Device):
     def __init__(self, ip: str, password: str | None):
         """Init"""
         destination = splitUrl(ip)
-        _LOGGER.debug(f"SHM {ip} => {destination}")
+        _LOG.debug(f"SHM {ip} => {destination}")
         self._ip = destination["host"]
         self._sensorValues: Dict[str, int] = {}
         if password:
-            _LOGGER.debug("Modus: using GGC Code")
+            _LOG.debug("Modus: using GGC Code")
             if not isInteger(password):
                 raise SmaConnectionException(
                     "Password/Grid Guard Code must be a number."
                 )
             self._ggc = int(password)
         else:
-            _LOGGER.debug("Modus: No GGC Code")
+            _LOG.debug("Modus: No GGC Code")
             self._ggc = 0
         self._device_list: Dict[str, DeviceInformation] = {}
         self._client: AsyncModbusTcpClient
@@ -151,11 +151,11 @@ class SHM2(Device):
 
     async def _login(self):
         """Login Using Grid Guard Code"""
-        _LOGGER.debug("Login with GGC")
+        _LOG.debug("Login with GGC")
         ret = await self._client.write_registers(
             43090, [self._ggc // 65536, self._ggc % 65536], device_id=1
         )
-        _LOGGER.debug(f"Login-Response {ret}")
+        _LOG.debug(f"Login-Response {ret}")
         print("Login-Response", ret)
         # Exception Response(144, 16, IllegalValue)
         # WriteMultipleRegisterResponse
@@ -174,10 +174,10 @@ class SHM2(Device):
                 register, count=2, device_id=slave
             )
         except ModbusException as exc:
-            _LOGGER.error(exc)
+            _LOG.error(exc)
             raise SmaConnectionException(f"ERROR: exception in pymodbus {exc}") from exc
         if ret.isError():
-            _LOGGER.error(f"ERROR: pymodbus returned an error! {ret}")
+            _LOG.error(f"ERROR: pymodbus returned an error! {ret}")
             raise SmaReadException(f"Modbus {register} Slave:{slave} Count: 2")
         if number_format.lower() == "u32":
             return ret.registers[0] * (2**16) + ret.registers[1]
@@ -198,11 +198,11 @@ class SHM2(Device):
 
         if self._ggc != 0:
             ggcStatus = await self.read_modbus(43090, 1, "u32")
-            _LOGGER.debug(f"GGC Code Status {ggcStatus}")
+            _LOG.debug(f"GGC Code Status {ggcStatus}")
             if ggcStatus == 0:
                 await self._login()
             ggcStatus = await self.read_modbus(43090, 1, "u32")
-            _LOGGER.debug(f"After Login -- GGC Code {ggcStatus}")
+            _LOG.debug(f"After Login -- GGC Code {ggcStatus}")
             if ggcStatus == 0:
                 raise SmaAuthenticationException("Grid Guard Code is not valid!")
         return True
@@ -255,7 +255,7 @@ class SHM2(Device):
                 sensor.range = sensorDef.range
 
         # if notfound:
-        #     _LOGGER.info(
+        #     _LOG.info(
         #         "No values for sensors: %s",
         #         ",".join(notfound),
         #     )
@@ -323,7 +323,7 @@ class SHM2(Device):
                 info.addr, values, device_id=info.slaveid
             )
         except ModbusException as exc:
-            _LOGGER.error(exc)
+            _LOG.error(exc)
             raise SmaWriteException(f"Error writing to sensor {sensor.key}") from exc
         if ret.isError():
             raise SmaWriteException(f"Error writing to sensor {sensor.key} {ret}")

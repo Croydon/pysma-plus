@@ -7,7 +7,7 @@ import struct
 
 from .definitions_speedwire import speedwireHeader
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class Discovery:
@@ -49,7 +49,7 @@ class Discovery:
 
     def sendDiscoveryRequest(self) -> None:
         """Send a discovery Request"""
-        _LOGGER.warn("Sending Discovery Request")
+        _LOG.warn("Sending Discovery Request")
         self.transport.sendto(  # type: ignore[attr-defined]
             bytes.fromhex("534d4100000402a0ffffffff0000002000000000"),
             (self.addr, self.port),
@@ -59,15 +59,15 @@ class Discovery:
         """Datagram received"""
         msg = speedwireHeader.from_packed(data[0:18])
         if not msg.isDiscoveryResponse():
-            _LOGGER.warning("Ignoring %s", msg)
+            _LOG.warning("Ignoring %s", msg)
             return
         if addr not in self.discovered:
             self.discovered.append(addr)
 
     def error_received(self, exc: Exception) -> None:
         """Called by error."""
-        _LOGGER.error("%s error occurred: %s", type(exc), exc)
+        _LOG.error("%s error occurred: %s", type(exc), exc)
 
     def connection_lost(self, exc: Exception) -> None:
         """Called by connection lost."""
-        _LOGGER.error("Socket closed, stop the event loop %s %s", type(exc), exc)
+        _LOG.error("Socket closed, stop the event loop %s %s", type(exc), exc)

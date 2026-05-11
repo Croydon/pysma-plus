@@ -20,7 +20,7 @@ from .device_speedwire2 import SMAspeedwireINVV2
 from .device_webconnect import SMAwebconnect
 from .discovery import Discovery
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 def SMA(session: ClientSession, url: str, password: str, group: str) -> SMAwebconnect:
@@ -38,7 +38,7 @@ def getDevice(
 ) -> Device | None:
     # pylint: disable=invalid-name
     """Returns a Device object for accessing the device"""
-    _LOGGER.debug(
+    _LOG.debug(
         "Device Called! Url: %s User/Group: %s Accessmethod: %s",
         url,
         groupuser,
@@ -56,7 +56,7 @@ def getDevice(
         return SHM2(ip=url, password=password)
     if accessmethod == "speedwireinvV2":
         return SMAspeedwireINVV2(host=url, password=password, group=groupuser)
-    _LOGGER.error("Unknown Accessmethod: %s", accessmethod)
+    _LOG.error("Unknown Accessmethod: %s", accessmethod)
     return None
 
 

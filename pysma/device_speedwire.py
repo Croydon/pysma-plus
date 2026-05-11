@@ -34,7 +34,7 @@ from .exceptions import (
 from .helpers import version_int_to_string
 from .sensor import Sensor, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 NO_HANDLER_FOR_MIN_TIMEDELTA = timedelta(
     hours=24
@@ -109,13 +109,13 @@ class SMAClientProtocol(DatagramProtocol):
             self.cmdidx += 1
             self._resendcounter = 0
         except (asyncio.TimeoutError, RuntimeError):
-            _LOGGER.debug(f"Timeout in command. Resendcounter: {self._resendcounter}")
+            _LOG.debug(f"Timeout in command. Resendcounter: {self._resendcounter}")
             self._resendcounter += 1
             self.debug["resendcounter"] += 1
             retries = self._defaultRetries
             if self.cmds[self.cmdidx] == "login":
                 retries = self._loginRetries
-            _LOGGER.debug(
+            _LOG.debug(
                 f"Timeout in command. Resendcounter: {self._resendcounter} {retries}"
             )
             if self._resendcounter > retries:
@@ -124,7 +124,7 @@ class SMAClientProtocol(DatagramProtocol):
                     self.future.set_exception(
                         SmaConnectionException("Login failed! No Response from Device!")
                     )
-                _LOGGER.debug("Timeout in command")
+                _LOG.debug("Timeout in command")
                 self.cmdidx += 1
                 self._resendcounter = 0
                 self._failedCounter += 1
@@ -134,7 +134,7 @@ class SMAClientProtocol(DatagramProtocol):
     def _confirm_repsonse(self, code: int = -1):
         """Mark the commandFuture as done"""
         if self._commandFuture is None or self._commandFuture.done():
-            _LOGGER.debug(f"unexpected message {code:08X}")
+            _LOG.debug(f"unexpected message {code:08X}")
             return
         self._commandFuture.set_result(True)
 
@@ -150,21 +150,21 @@ class SMAClientProtocol(DatagramProtocol):
         self._group = group
         self.data_values = {}
         self.sensors = {}
-        _LOGGER.debug(f"Start Query {cmds}")
-        #        _LOGGER.debug("Sending login")
+        _LOG.debug(f"Start Query {cmds}")
+        #        _LOG.debug("Sending login")
         self.debug["msg"].append(["SEND", "login"])
         self._firstSend = time.time()
         await self._send_next_command()
 
     def connection_lost(self, exc: Exception | None) -> None:
         """connection lost handler"""
-        _LOGGER.debug("Connection lost: %s %s", type(exc), exc)
+        _LOG.debug("Connection lost: %s %s", type(exc), exc)
         self._loggedIn = False
         self.on_connection_lost.set_result(True)
 
     def _send_command(self, cmd: bytes, exceptResponse: bool = True) -> None:
         """Send the Command"""
-        _LOGGER.debug(
+        _LOG.debug(
             f"Sending command [{len(cmd)}] -- {binascii.hexlify(cmd).upper()}"  # type: ignore[str-bytes-safe]
         )
         if exceptResponse:
@@ -175,7 +175,7 @@ class SMAClientProtocol(DatagramProtocol):
         self._transport.sendto(cmd)
 
     async def logoff(self) -> None:
-        _LOGGER.debug("Sending logoff")
+        _LOG.debug("Sending logoff")
         try:
             self._send_command(self.speedwire.getLogoutFrame(0x23021923), False)
             await asyncio.sleep(0.2)  # Wait for delayed responses
@@ -211,7 +211,7 @@ class SMAClientProtocol(DatagramProtocol):
             # Send the next command
             try:
                 self.debug["msg"].append(["SEND", self.cmds[self.cmdidx]])
-                _LOGGER.debug("Sending " + self.cmds[self.cmdidx])
+                _LOG.debug("Sending " + self.cmds[self.cmdidx])
                 self._lastSend = time.time()
                 if (self.cmds[self.cmdidx]) == "login":
                     groupidx = ["user", "installer"].index(self._group) == 1
@@ -245,12 +245,12 @@ class SMAClientProtocol(DatagramProtocol):
 
     def handle_login(self, msg: speedwireHeader6065) -> None:
         """Is called if a login response is received"""
-        _LOGGER.debug("Login rppsonse received!")
+        _LOG.debug("Login rppsonse received!")
         self.sensors = {}
         self.data_values = {"error": msg.error}
         self.data_values["serial"] = str(msg.src_serial)
         if msg.error == 256:
-            _LOGGER.error("Login failed!")
+            _LOG.error("Login failed!")
             if self.future:
                 self.future.set_exception(
                     SmaAuthenticationException(
@@ -271,7 +271,7 @@ class SMAClientProtocol(DatagramProtocol):
         if sen.key in self.sensors:
             oldValue = self.sensors[sen.key].value
             if oldValue != value:
-                # _LOGGER.warning(
+                # _LOG.warning(
                 #     f"Sensors {sen.key} {sen.name} Old Value: {oldValue} New values: {sen.value} Overwrite: {overwrite}"
                 # )
                 if not overwrite:
@@ -331,7 +331,7 @@ class SMAClientProtocol(DatagramProtocol):
                 # it also already known to "unfinished" set
                 return
 
-            _LOGGER.debug(f"No Handler for {c}: {values} @ {valuesPos}")
+            _LOG.debug(f"No Handler for {c}: {values} @ {valuesPos}")
             self.debug["unfinished"].add(f"{c}")
             self.debug["warned"][
                 c
@@ -359,15 +359,15 @@ class SMAClientProtocol(DatagramProtocol):
             # Special handling for a response that returns two values under the same code
             if isinstance(sensor, List):
                 if register_idx >= len(sensor):
-                    _LOGGER.warning(
+                    _LOG.warning(
                         f"No Handler for {c} at register idx {register_idx}: {values}"
                     )
                     continue
-                _LOGGER.debug(
+                _LOG.debug(
                     f"Special Handler for {c} at register idx {register_idx}: {values}"
                 )
                 sensor = sensor[register_idx]
-            _LOGGER.debug(
+            _LOG.debug(
                 f"ID: {self._id} Values {sensor.name}/{sensor.key}: {v} {values}"
             )
             self.handle_newvalue(sensor, v, handler.get("overwrite", True))
@@ -387,7 +387,7 @@ class SMAClientProtocol(DatagramProtocol):
 
     # Main routine for processing received messages.
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        _LOGGER.debug(f"RECV: {addr} Len:{len(data)} {binascii.hexlify(data).upper()}")  # type: ignore[str-bytes-safe]
+        _LOG.debug(f"RECV: {addr} Len:{len(data)} {binascii.hexlify(data).upper()}")  # type: ignore[str-bytes-safe]
         delta = 0.0
         if self._lastSend > 0:
             delta = time.time() - self._lastSend
@@ -404,12 +404,12 @@ class SMAClientProtocol(DatagramProtocol):
         # Check if message is a 6065 protocol
         msg = speedwireHeader.from_packed(data[0:18])
         if not msg.check6065():
-            _LOGGER.debug("Ignoring non 6065 Response. %d", msg.protokoll)
+            _LOG.debug("Ignoring non 6065 Response. %d", msg.protokoll)
             return
 
         # If the requested information is not available, send the next command,
         if len(data) < 58:
-            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            _LOG.debug(f"NACK [{len(data)}] -- {data!r}")
             self._confirm_repsonse()
             return
 
@@ -425,11 +425,11 @@ class SMAClientProtocol(DatagramProtocol):
         code = int.from_bytes(data[54:58], "little")
         codem = code & 0x00FFFF00
         if len(data) == 58 and codem == 0:
-            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            _LOG.debug(f"NACK [{len(data)}] -- {data!r}")
             self._confirm_repsonse()
             return
         if size_registers <= 0 or size_registers not in [16, 28, 40]:
-            _LOGGER.warning(
+            _LOG.warning(
                 f"Skipping message. --- Len {data!r} Ril {codem} {cnt_registers} x {size_registers} bytes"
             )
             self._confirm_repsonse(code)
@@ -461,7 +461,7 @@ class SMAspeedwireINV(Device):
 
     async def _createEndpoint(self) -> None:
         if self._protocol is not None:
-            # _LOGGER.debug("Protocol already created")
+            # _LOG.debug("Protocol already created")
             return
         loop = asyncio.get_running_loop()
         on_connection_lost = loop.create_future()
@@ -511,7 +511,7 @@ class SMAspeedwireINV(Device):
             await asyncio.wait_for(fut, timeout=self._protocol._overallTimeout)
         except TimeoutError:
             self._debug["overalltimeout"] += 1
-            _LOGGER.warning("Timeout in device_info")
+            _LOG.warning("Timeout in device_info")
             if (
                 "error" in self._protocol.data_values
                 and self._protocol.data_values["error"] == 0
@@ -576,7 +576,7 @@ class SMAspeedwireINV(Device):
         self, sensors: Sensors, sensorReadings: dict[str, Sensor], deviceID: str | None
     ) -> None:
         """Update a sensor with the sensor reading"""
-        _LOGGER.debug("Received %d sensor readings", len(sensorReadings))
+        _LOG.debug("Received %d sensor readings", len(sensorReadings))
         for sen in sensors:
             if sen.enabled and sen.key in sensorReadings:
                 value = sensorReadings[sen.key].value
@@ -615,7 +615,7 @@ class SMAspeedwireINV(Device):
             try:
                 await asyncio.wait_for(fut, timeout=5)
             except TimeoutError:
-                _LOGGER.warning("Timeout in detect")
+                _LOG.warning("Timeout in detect")
             if (
                 "error" in self._protocol.data_values
                 and self._protocol.data_values["error"] == 0

@@ -44,7 +44,7 @@ from .exceptions import (
 from .helpers import version_int_to_string
 from .sensor import Sensor, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -98,7 +98,7 @@ class SMAwebconnect(Device):
         if group not in USERS:
             raise KeyError(f"Invalid user type: {group}")
         if password is not None and len(password) > 12:
-            _LOGGER.warning("Password should not exceed 12 characters")
+            _LOG.warning("Password should not exceed 12 characters")
         if password is None:
             self._new_session_data = None
         else:
@@ -136,7 +136,7 @@ class SMAwebconnect(Device):
             kwargs.setdefault("params", {})
             kwargs["params"]["sid"] = self._sid
 
-        _LOGGER.debug("Sending %s request to %s: %s", method, url, kwargs)
+        _LOG.debug("Sending %s request to %s: %s", method, url, kwargs)
 
         max_retries = 2
         for retry in range(max_retries):
@@ -148,17 +148,17 @@ class SMAwebconnect(Device):
                     **kwargs,
                 ) as res:
                     res_json = await res.json()
-                    _LOGGER.debug("Received reply %s", res_json)
+                    _LOG.debug("Received reply %s", res_json)
                     return res_json or {}
             except (client_exceptions.ContentTypeError, json.decoder.JSONDecodeError):
-                _LOGGER.warning("Request to %s did not return a valid json.", url)
+                _LOG.warning("Request to %s did not return a valid json.", url)
                 break
             except client_exceptions.ServerDisconnectedError as exc:
                 if (retry + 1) < max_retries:
                     # For some reason the SMA device sometimes raises a server disconnected error
                     # If this happens we will retry up to `max_retries` times
                     # This  events errors in Home Assistant
-                    _LOGGER.debug("ServerDisconnectedError, will retry connection.")
+                    _LOG.debug("ServerDisconnectedError, will retry connection.")
                     continue
 
                 raise SmaConnectionException(
@@ -214,7 +214,7 @@ class SMAwebconnect(Device):
         if self._l10n is None:
             self._l10n = await self._get_json(f"/data/l10n/{self._lang}.json")
             if len(self._l10n) == 0:
-                _LOGGER.warning(
+                _LOG.warning(
                     "Language '%s' not supported, fallback to '%s'",
                     self._lang,
                     DEFAULT_LANG,
@@ -242,7 +242,7 @@ class SMAwebconnect(Device):
         err = body.get("err")
 
         if err is not None:
-            _LOGGER.warning(
+            _LOG.warning(
                 "%s: error detected, closing session to force another login attempt, got: %s",
                 self._url,
                 body,
@@ -251,7 +251,7 @@ class SMAwebconnect(Device):
             raise SmaReadException("Error detected while reading")
 
         if "result" not in body:
-            _LOGGER.warning("No 'result' in reply from SMA, got: %s", body)
+            _LOG.warning("No 'result' in reply from SMA, got: %s", body)
             raise SmaReadException("No 'result' in reply from SMA")
 
         if self._uid is None:
@@ -260,7 +260,7 @@ class SMAwebconnect(Device):
 
         result_body = body["result"].pop(self._uid, None)
         if body != {"result": {}}:
-            _LOGGER.warning(
+            _LOG.warning(
                 "Unexpected body %s, extracted %s",
                 json.dumps(body),
                 json.dumps(result_body),
@@ -281,7 +281,7 @@ class SMAwebconnect(Device):
         body = await self._post_json(URL_LOGIN, self._new_session_data)
         self._sid = jmespath.search("result.sid", body)
         if self._sid:
-            _LOGGER.debug("New SID: %s", self._sid)
+            _LOG.debug("New SID: %s", self._sid)
             return True
 
         err = body.pop("err", None)
@@ -289,16 +289,16 @@ class SMAwebconnect(Device):
 
         if err:
             if err == 503:
-                _LOGGER.error(msg, "Max amount of sessions reached")
+                _LOG.error(msg, "Max amount of sessions reached")
             elif err == 404:
                 if not self._url.startswith("https"):
-                    _LOGGER.error(msg, "Login URL not found, try using HTTPS")
+                    _LOG.error(msg, "Login URL not found, try using HTTPS")
                 else:
-                    _LOGGER.error(msg, "Login URL not found")
+                    _LOG.error(msg, "Login URL not found")
             else:
-                _LOGGER.error(msg, err)
+                _LOG.error(msg, err)
         else:
-            _LOGGER.error(msg, "Session ID expected [result.sid]")
+            _LOG.error(msg, "Session ID expected [result.sid]")
 
         raise SmaAuthenticationException()
 
@@ -345,7 +345,7 @@ class SMAwebconnect(Device):
                 notfound.append(f"{sen.name} [{sen.key}]")
 
         if notfound:
-            _LOGGER.info(
+            _LOG.info(
                 "No values for sensors: %s. Response from inverter: %s",
                 ",".join(notfound),
                 result_body,
@@ -437,7 +437,7 @@ class SMAwebconnect(Device):
         sensor_keys = all_sensors.keys()
         device_sensors = Sensors()
 
-        _LOGGER.debug("Matching generic sensors")
+        _LOG.debug("Matching generic sensors")
 
         for sensor in definitions_webconnect.sensor_map[GENERIC_SENSORS]:
             if sensor.key in sensor_keys:
@@ -451,10 +451,10 @@ class SMAwebconnect(Device):
                     # All other types, single or multi value
                     sensors_values = list(all_sensors[sensor.key].values())[0]
                     val_len = len(sensors_values)
-                _LOGGER.debug("Found %s with %d value(s).", sensor.key, val_len)
+                _LOG.debug("Found %s with %d value(s).", sensor.key, val_len)
 
                 if sensor.key_idx < val_len:
-                    _LOGGER.debug(
+                    _LOG.debug(
                         "Adding sensor %s (%s_%s)",
                         sensor.name,
                         sensor.key,
@@ -462,13 +462,13 @@ class SMAwebconnect(Device):
                     )
                     device_sensors.add(sensor)
 
-        _LOGGER.debug("Checking if Energy Meter is present...")
+        _LOG.debug("Checking if Energy Meter is present...")
         # Detect and add Energy Meter sensors
         em_sensor = copy.copy(definitions_webconnect.energy_meter)
         em_sensor.extract_value(all_sensors)
 
         if em_sensor.value:
-            _LOGGER.debug(
+            _LOG.debug(
                 "Energy Meter with serial %s detected. Adding extra sensors.",
                 em_sensor.value,
             )
@@ -482,7 +482,7 @@ class SMAwebconnect(Device):
                 ]
             )
 
-        _LOGGER.debug("Finding connected optimizers...")
+        _LOG.debug("Finding connected optimizers...")
         # Detect and add Optimizer Sensors
         optimizers = all_sensors.get(definitions_webconnect.optimizer_serial.key)
         if optimizers:
@@ -490,7 +490,7 @@ class SMAwebconnect(Device):
 
             for idx, serial in enumerate(serials or []):
                 if serial["val"]:
-                    _LOGGER.debug(
+                    _LOG.debug(
                         "Optimizer %s with serial %s detected. Adding extra sensors.",
                         idx,
                         serial,
@@ -541,7 +541,7 @@ class SMAwebconnect(Device):
     ) -> None:
         """Set Parameters."""
         if sensor.webconnect_deviceId is None:
-            _LOGGER.info(
+            _LOG.info(
                 f"Cannot set Parameter {sensor} {value} {deviceID}. Device ID could not be determined."
             )
             return
@@ -552,6 +552,6 @@ class SMAwebconnect(Device):
             "values": [{str(key): {sensor.webconnect_deviceId: [value]}}],
         }
         ret = await self._post_json(URL_SETPARAMETER, requestData)
-        _LOGGER.info(
+        _LOG.info(
             f"Set_Paramter {sensor} {value} {deviceID} {sensor.webconnect_deviceId} Return {ret}"
         )

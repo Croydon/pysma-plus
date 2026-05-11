@@ -25,7 +25,7 @@ from .exceptions import (
 )
 from .sensor import Sensor, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -154,7 +154,7 @@ class SMAspeedwireEM(Device):
                 notfound.append(sensor.key)
 
         if notfound:
-            _LOGGER.info(
+            _LOG.info(
                 "No values for sensors: %s",
                 ",".join(notfound),
             )
@@ -250,7 +250,7 @@ class SMAspeedwireEM(Device):
             )
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         else:
-            _LOGGER.info("Binding to %s" % self._bindingAddr)
+            _LOG.info("Binding to %s" % self._bindingAddr)
             for addr in self._bindingAddr:
                 try:
                     mreq = struct.pack(
@@ -277,11 +277,11 @@ class SMAspeedwireEM(Device):
 
     def error_received(self, exc: Exception) -> None:
         """Called by error."""
-        _LOGGER.error("%s error occurred: %s", type(exc), exc)
+        _LOG.error("%s error occurred: %s", type(exc), exc)
 
     def connection_lost(self, exc: Exception) -> None:
         """Called by connection lost."""
-        # _LOGGER.error("Socket closed, stop the event loop %s %s", type(exc), exc)
+        # _LOG.error("Socket closed, stop the event loop %s %s", type(exc), exc)
 
     def datagram_received(self, p: bytes, addr: tuple[str, int]) -> dict[str, Any]:
         """Decode a Speedwire-Packet
@@ -327,7 +327,7 @@ class SMAspeedwireEM(Device):
                 obis = "sw_version"
                 pos += 4 + 4
             else:
-                _LOGGER.debug(
+                _LOG.debug(
                     "Unknown packet in speedwire: "
                     + str(mchannel)
                     + " "

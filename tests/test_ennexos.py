@@ -10,7 +10,7 @@ import pytest
 from pysma.device_ennexos import SMAennexos
 from pysma.exceptions import SmaAuthenticationException, SmaConnectionException
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class Test_SMA_class:
@@ -54,7 +54,7 @@ class Test_SMA_class:
             await sma._jsonrequest("/dummy-url", {})
         await session.close()
 
-    @patch("pysma.device_ennexos._LOGGER.warning")
+    @patch("pysma.device_ennexos._LOG.warning")
     async def test_json_json(self, mock_warn, mock_aioresponse):
         """Test request_json with a SmaConnectionException from TimeoutError."""
         mock_aioresponse.post("/dummy-url", body="no-valid-json")

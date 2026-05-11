@@ -26,7 +26,7 @@ from .exceptions import (
 from .helpers import version_int_to_string
 from .sensor import Sensor, Sensors
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 MY_SYSTEMID = 0x00ED
@@ -345,12 +345,12 @@ class _AsyncSpeedwireSession:
         # Check if message is a 6065 protocol
         msg = speedwireHeader.from_packed(data[0:18])
         if not msg.check6065():
-            _LOGGER.debug("Ignoring non 6065 Response. %d", msg.protokoll)
+            _LOG.debug("Ignoring non 6065 Response. %d", msg.protokoll)
             return
 
         # If the requested information is not available, send the next command,
         if len(data) < 58:
-            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            _LOG.debug(f"NACK [{len(data)}] -- {data!r}")
             #  self._confirm_repsonse()
             return
 
@@ -365,10 +365,10 @@ class _AsyncSpeedwireSession:
         code = int.from_bytes(data[54:58], "little")
         codem = code & 0x00FFFF00
         if len(data) == 58 and codem == 0:
-            _LOGGER.debug(f"NACK [{len(data)}] -- {data!r}")
+            _LOG.debug(f"NACK [{len(data)}] -- {data!r}")
             return
         if size_registers <= 0 or size_registers not in [16, 28, 40]:
-            _LOGGER.warning(
+            _LOG.warning(
                 f"Skipping message. --- Len {data!r} Ril {codem} {cnt_registers} x {size_registers} bytes"
             )
             return
@@ -408,7 +408,7 @@ class _AsyncSpeedwireSession:
                 valuesPos.append(f"{idx + 54}")
                 return
 
-            _LOGGER.debug(f"No Handler for {c}: {values} @ {valuesPos}")
+            _LOG.debug(f"No Handler for {c}: {values} @ {valuesPos}")
             # TODO
             return
 
@@ -432,11 +432,11 @@ class _AsyncSpeedwireSession:
             # Special handling for a response that returns two values under the same code
             if isinstance(sensor, List):
                 if register_idx >= len(sensor):
-                    _LOGGER.warning(
+                    _LOG.warning(
                         f"No Handler for {c} at register idx {register_idx}: {values}"
                     )
                     continue
-                _LOGGER.debug(
+                _LOG.debug(
                     f"Special Handler for {c} at register idx {register_idx}: {values}"
                 )
                 sensor = sensor[register_idx]

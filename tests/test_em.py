@@ -8,7 +8,7 @@ from aioresponses import aioresponses
 
 from pysma.device_em import SMAspeedwireEM
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class Test_SMAEM_class:

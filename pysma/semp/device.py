@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,7 +78,7 @@ class sempDevice:
             and deviceId.startswith("F-11223344-")
             and deviceId.endswith("-00")
         ):
-            _LOGGER.debug(
+            _LOG.debug(
                 f"DeviceID {deviceId} does not meet the recommendations: F-11223344-XXXXXXXXXXXX-00"
             )
         assert deviceType in self.possibleDeviceType()

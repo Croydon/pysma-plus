@@ -17,7 +17,7 @@ from pysmaplus.sensor import Sensors
 
 # This example will work with Python 3.9+
 
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 VAR: dict[str, Any] = {}
 log_queue: queue.Queue = queue.Queue()
@@ -67,7 +67,7 @@ async def main_loop(args: argparse.Namespace) -> None:
 
         mqtt_config = await setup_mqtt(args.mqtt)
 
-        _LOGGER.debug(
+        _LOG.debug(
             f"MainLoop called! Url: {url} User/Group: {user} Accessmethod: {accessmethod}"
         )
         VAR["sma"] = pysma.getDevice(session, url, password, user, accessmethod)
@@ -76,10 +76,10 @@ async def main_loop(args: argparse.Namespace) -> None:
         try:
             await VAR["sma"].new_session()
         except pysma.exceptions.SmaAuthenticationException:
-            _LOGGER.error("Authentication failed!")
+            _LOG.error("Authentication failed!")
             return
         except pysma.exceptions.SmaConnectionException:
-            _LOGGER.error("Unable to connect to device at %s", url)
+            _LOG.error("Unable to connect to device at %s", url)
             return
         # We should not get any exceptions, but if we do we will close the session.
         try:
@@ -123,7 +123,7 @@ async def main_loop(args: argparse.Namespace) -> None:
                             print("Timeout", e)
                     await asyncio.sleep(delay)
         finally:
-            _LOGGER.info("Closing Session...")
+            _LOG.info("Closing Session...")
             await VAR["sma"].close_session()
 
 
